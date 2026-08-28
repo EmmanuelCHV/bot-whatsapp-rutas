@@ -1,18 +1,19 @@
 const express = require('express');
 const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 
 const app = express();
 app.use(express.json());
 
 let sock;
+let qrCodeData = null;
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true
+        printQRInTerminal: false
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -21,23 +22,36 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('--- ESCANEA ESTE CÓDIGO QR CON WHATSAPP ---');
-            qrcode.generate(qr, { small: true });
+            qrCodeData = qr;
+            console.log('--- NUEVO CÓDIGO QR GENERADO ---');
         }
 
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Conexión cerrada. Reconectando...', shouldReconnect);
             if (shouldReconnect) {
                 connectToWhatsApp();
             }
         } else if (connection === 'open') {
+            qrCodeData = null;
             console.log('¡Conexión a WhatsApp establecida con éxito!');
         }
     });
 }
 
 connectToWhatsApp();
+
+// Ruta para ver el QR desde el navegador
+app.get('/qr', async (req, res) => {
+    if (!qrCodeData) {
+        return res.send('<h3>No hay QR activo o ya estás conectado a WhatsApp.</h3>');
+    }
+    try {
+        const url = await QRCode.toDataURL(qrCodeData);
+        res.send(`<h2>Escanea este código con WhatsApp</h2><img src="${url}" style="width:300px;"/>`);
+    } catch (err) {
+        res.status(500).send('Error generando el QR');
+    }
+});
 
 app.post('/api/v1/enviar-ruta', async (req, res) => {
     const { mensaje, clientes } = req.body;
@@ -64,7 +78,6 @@ app.post('/api/v1/enviar-ruta', async (req, res) => {
             console.error(`Error enviando a ${c.nombre}:`, err);
         }
 
-        // Pausa de 3 segundos entre envíos para protección de la cuenta
         await new Promise(resolve => setTimeout(resolve, 3000));
     }
 });
